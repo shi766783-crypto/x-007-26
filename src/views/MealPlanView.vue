@@ -11,6 +11,8 @@ import BaseEmpty from '@/components/common/BaseEmpty.vue'
 
 const mealPlan = useMealPlanStore()
 
+const MEAL_KEY_MAP = { 早餐: 'breakfast', 午餐: 'lunch', 晚餐: 'dinner' }
+
 const weekKey = ref(currentWeekKey())
 const showSlotPicker = ref(false)
 const showDishForm = ref(false)
@@ -18,12 +20,25 @@ const showLibrary = ref(false)
 const editingDish = ref(null)
 const slotTarget = ref({ day: 'monday', meal: '早餐' })
 const search = ref('')
+const notice = ref(null) // { type: 'info' | 'warn', text }
 
 const weekDays = computed(() => mealPlan.plan[weekKey.value] || {})
 const weekLabel = computed(() => {
   const start = weekStartFromKey(weekKey.value)
   const d = parseDateKey(start)
   return `${d.getMonth() + 1}月${d.getDate()}日 起`
+})
+
+const autoCount = computed(() => mealPlan.autoSlotCount(weekKey.value))
+
+const emptyCount = computed(() => {
+  let count = 0
+  WEEK_DAYS.forEach((d) => {
+    MEALS.forEach((m) => {
+      if (mealSlot(d.key, m).length === 0) count += 1
+    })
+  })
+  return count
 })
 
 const filteredDishes = computed(() => {
@@ -36,6 +51,48 @@ function shiftWeek(delta) {
   const start = parseDateKey(weekStartFromKey(weekKey.value))
   start.setDate(start.getDate() + delta * 7)
   weekKey.value = toWeekKey(start)
+  notice.value = null
+}
+
+function goCurrentWeek() {
+  weekKey.value = currentWeekKey()
+  notice.value = null
+}
+
+// 一键自动排菜：随机填满空闲餐次，已手动安排的不动
+function autoFill() {
+  if (!mealPlan.dishes.length) {
+    notice.value = { type: 'warn', text: '菜谱库还是空的，先新建几道菜品再来自动排菜吧' }
+    return
+  }
+  if (emptyCount.value === 0) {
+    notice.value = { type: 'info', text: '本周 21 个餐次都已排满，无需自动排菜' }
+    return
+  }
+  const filled = mealPlan.autoFillWeek(weekKey.value)
+  notice.value = { type: 'info', text: `已自动填入 ${filled} 个空闲餐次，手动安排的保持不变` }
+}
+
+// 一键清空自动填入的餐次后重新随机排菜
+function reshuffle() {
+  if (!mealPlan.dishes.length) {
+    notice.value = { type: 'warn', text: '菜谱库还是空的，先新建几道菜品再来自动排菜吧' }
+    return
+  }
+  const removed = autoCount.value
+  const filled = mealPlan.reshuffleWeek(weekKey.value)
+  notice.value = {
+    type: 'info',
+    text: removed
+      ? `已清空 ${removed} 个自动餐次并重新填入 ${filled} 个，手动安排的保持不变`
+      : `已自动填入 ${filled} 个空闲餐次，手动安排的保持不变`,
+  }
+}
+
+// 只清空自动排菜的部分
+function clearAuto() {
+  const cleared = mealPlan.clearAutoSlots(weekKey.value)
+  notice.value = { type: 'info', text: `已清空 ${cleared} 个自动排菜餐次，手动安排的未受影响` }
 }
 
 function openPicker(day, meal) {
@@ -68,8 +125,12 @@ function onDishSave(data) {
 }
 
 function mealSlot(day, meal) {
-  const m = { 早餐: 'breakfast', 午餐: 'lunch', 晚餐: 'dinner' }[meal]
+  const m = MEAL_KEY_MAP[meal]
   return (weekDays.value[day] && weekDays.value[day][m]) || []
+}
+
+function isAuto(day, meal) {
+  return mealPlan.isAutoSlot(weekKey.value, day, MEAL_KEY_MAP[meal])
 }
 </script>
 
@@ -90,7 +151,27 @@ function mealSlot(day, meal) {
         <span class="muted small">{{ weekLabel }}</span>
       </div>
       <BaseButton variant="ghost" size="sm" @click="shiftWeek(1)">下周 ›</BaseButton>
-      <BaseButton variant="text" size="sm" @click="weekKey = currentWeekKey()">回到本周</BaseButton>
+      <BaseButton variant="text" size="sm" @click="goCurrentWeek">回到本周</BaseButton>
+      <span class="nav-divider"></span>
+      <BaseButton
+        v-if="autoCount === 0"
+        size="sm"
+        :disabled="!mealPlan.dishes.length"
+        @click="autoFill"
+      >🎲 自动排菜</BaseButton>
+      <template v-else>
+        <BaseButton size="sm" @click="reshuffle">🔄 换一批</BaseButton>
+        <BaseButton variant="text" size="sm" @click="clearAuto">撤销</BaseButton>
+      </template>
+    </div>
+
+    <div v-if="notice" class="notice-bar" :class="`notice--${notice.type}`">
+      <span>{{ notice.type === 'warn' ? '⚠️' : '✨' }} {{ notice.text }}</span>
+      <button class="notice-close" @click="notice = null">✕</button>
+    </div>
+    <div v-else-if="autoCount > 0" class="notice-bar notice--info">
+      <span>🎲 已自动排 {{ autoCount }} 餐<span v-if="emptyCount">，空闲 {{ emptyCount }} 餐</span>；带 ✨ 的为自动填入，可点「换一批」重排或「撤销」清空</span>
+      <button class="notice-close" @click="notice = null">✕</button>
     </div>
 
     <div class="plan-board">
@@ -102,9 +183,17 @@ function mealSlot(day, meal) {
         <div class="meal-label">
           {{ MEAL_ICONS[meal] }} {{ meal }}
         </div>
-        <div v-for="d in WEEK_DAYS" :key="d.key" class="slot">
+        <div
+          v-for="d in WEEK_DAYS"
+          :key="d.key"
+          class="slot"
+          :class="{ 'slot--auto': isAuto(d.key, meal) }"
+        >
           <div v-for="dishId in mealSlot(d.key, meal)" :key="dishId" class="dish-chip">
-            <BaseTag :text="mealPlan.dishMap[dishId]?.name || '未知'" :color="DIFFICULTY_COLORS[mealPlan.dishMap[dishId]?.difficulty] || '#90a4ae'" />
+            <BaseTag
+              :text="`${isAuto(d.key, meal) ? '✨ ' : ''}${mealPlan.dishMap[dishId]?.name || '未知'}`"
+              :color="DIFFICULTY_COLORS[mealPlan.dishMap[dishId]?.difficulty] || '#90a4ae'"
+            />
             <button class="rm" @click="removeDish(d.key, meal, dishId)">✕</button>
           </div>
           <button class="add-slot" @click="openPicker(d.key, meal)">+</button>
@@ -177,6 +266,41 @@ function mealSlot(day, meal) {
   align-items: center;
   gap: 12px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.nav-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+.notice-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.notice--info {
+  background: var(--primary-light);
+  color: var(--primary-dark);
+}
+.notice--warn {
+  background: var(--warn-light);
+  color: #e65100;
+}
+.notice-close {
+  border: none;
+  background: none;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+  font-size: 12px;
+}
+.notice-close:hover {
+  opacity: 1;
 }
 .week-label {
   flex: 1;
@@ -234,6 +358,10 @@ function mealSlot(day, meal) {
   flex-direction: column;
   gap: 4px;
   background: var(--surface-2);
+}
+.slot--auto {
+  background: var(--primary-light);
+  border-color: var(--primary);
 }
 .dish-chip {
   display: flex;
