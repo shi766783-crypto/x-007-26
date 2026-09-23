@@ -71,6 +71,56 @@ function mealSlot(day, meal) {
   const m = { 早餐: 'breakfast', 午餐: 'lunch', 晚餐: 'dinner' }[meal]
   return (weekDays.value[day] && weekDays.value[day][m]) || []
 }
+
+const MEAL_SLOT_KEYS = { 早餐: 'breakfast', 午餐: 'lunch', 晚餐: 'dinner' }
+
+const autoWeek = computed(() => mealPlan.autoFilled[weekKey.value] || null)
+
+// 空闲餐次数（没有任何菜品的格子）
+const emptySlotsCount = computed(() => {
+  let count = 0
+  WEEK_DAYS.forEach((d) => {
+    MEALS.forEach((meal) => {
+      if (mealSlot(d.key, meal).length === 0) count++
+    })
+  })
+  return count
+})
+
+// 本周自动填入的餐次数
+const autoSlotsCount = computed(() => {
+  if (!autoWeek.value) return 0
+  let count = 0
+  WEEK_DAYS.forEach((d) => {
+    MEALS.forEach((meal) => {
+      if (autoWeek.value[d.key][MEAL_SLOT_KEYS[meal]].length > 0) count++
+    })
+  })
+  return count
+})
+
+function isAutoDish(day, meal, dishId) {
+  const auto = autoWeek.value
+  return Boolean(auto && auto[day][MEAL_SLOT_KEYS[meal]].includes(dishId))
+}
+
+function autoFill() {
+  if (!mealPlan.dishes.length) {
+    alert('菜谱库还是空的，先新建几道菜品再自动排菜吧 🍳')
+    return
+  }
+  if (!emptySlotsCount.value) {
+    alert('本周餐次都已排满啦，没有空闲餐次需要填充 🎉')
+    return
+  }
+  const n = mealPlan.autoFillWeek(weekKey.value)
+  if (n) alert(`已自动安排 ${n} 个餐次 🎲，手动排好的菜品保持不动`)
+}
+
+function clearAndRefill() {
+  mealPlan.clearAutoFilled(weekKey.value)
+  autoFill()
+}
 </script>
 
 <template>
@@ -91,6 +141,21 @@ function mealSlot(day, meal) {
       </div>
       <BaseButton variant="ghost" size="sm" @click="shiftWeek(1)">下周 ›</BaseButton>
       <BaseButton variant="text" size="sm" @click="weekKey = currentWeekKey()">回到本周</BaseButton>
+      <div class="auto-actions">
+        <BaseButton
+          size="sm"
+          :disabled="!emptySlotsCount"
+          :title="emptySlotsCount ? `为 ${emptySlotsCount} 个空闲餐次随机安排菜品` : '本周已排满'"
+          @click="autoFill"
+        >🎲 一键排菜</BaseButton>
+        <BaseButton
+          variant="ghost"
+          size="sm"
+          :disabled="!autoSlotsCount"
+          title="清空自动排菜的结果后重新随机安排，手动排好的不动"
+          @click="clearAndRefill"
+        >清空重排</BaseButton>
+      </div>
     </div>
 
     <div class="plan-board">
@@ -104,6 +169,7 @@ function mealSlot(day, meal) {
         </div>
         <div v-for="d in WEEK_DAYS" :key="d.key" class="slot">
           <div v-for="dishId in mealSlot(d.key, meal)" :key="dishId" class="dish-chip">
+            <span v-if="isAutoDish(d.key, meal, dishId)" class="auto-mark" title="自动排菜">🎲</span>
             <BaseTag :text="mealPlan.dishMap[dishId]?.name || '未知'" :color="DIFFICULTY_COLORS[mealPlan.dishMap[dishId]?.difficulty] || '#90a4ae'" />
             <button class="rm" @click="removeDish(d.key, meal, dishId)">✕</button>
           </div>
@@ -181,6 +247,17 @@ function mealSlot(day, meal) {
 .week-label {
   flex: 1;
   text-align: center;
+}
+.auto-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: 8px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+.auto-mark {
+  font-size: 11px;
+  line-height: 1;
 }
 .week-title {
   font-weight: 700;
